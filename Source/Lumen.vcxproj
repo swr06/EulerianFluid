@@ -238,7 +238,7 @@
   <ItemGroup>
     <None Include="Core\Shaders\Blit.glsl" />
     <None Include="Core\Shaders\FBOVert.glsl" />
-    <None Include="Core\Shaders\Render.glsl" />
+    <None Include="Core\Shaders\Render.frag" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

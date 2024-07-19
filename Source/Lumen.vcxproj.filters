@@ -277,7 +277,7 @@
     <None Include="Core\Shaders\FBOVert.glsl">
       <Filter>Source Files\Simulation\Shaders</Filter>
     </None>
-    <None Include="Core\Shaders\Render.glsl">
+    <None Include="Core\Shaders\Render.frag">
       <Filter>Source Files\Simulation\Shaders</Filter>
     </None>
   </ItemGroup>

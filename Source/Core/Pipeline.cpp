@@ -11,22 +11,112 @@
 
 namespace Simulation {
 
+	/*
+	1) Verlet Acceleration
+	2) Projection to maintain incompressability 
+	3) Advection
+	*/
+
+	enum Directions : uint8_t {
+		UP=0, 
+		DOWN,
+		LEFT,
+		RIGHT
+	};
+	
+	// Optimal to use memory complexity 2(n+2)^2 instead of 4n^2 for n >= 5
+	struct Cell {
+
+		// 0 -> Right Velocity
+		// 1 -> Bottom Velocity
+		glm::vec2 Velocities;
+	};
+
+	// Boiler
+	typedef glm::vec3 Force;
+	// Boiler
+
+	// Simulation
+
+	float GridSpacing = 1.;
+	float DensityWater = 1000.0f;
+	float OverRelaxationCoefficient = 1.0f;
+
+	const int SimulationMapResolution = 256;
+	const int PaddedResolution = SimulationMapResolution + 2;
+	Cell* SimulationMap;
+	float* PressureGrid;
+	float Gravity = 9.81f; 
+
+
 	float DebugVar = 0.0f;
-	int Resolution = 256;
 
+	// Sim
 	int Substeps = 3;
-
 	bool DoSim = false;
-
 	bool PhysicsStep = false;
 
-	float* Heightmap;
+	// RNG 
 	Random RandomGen;
 
-	typedef glm::vec3 Force;
+	// Conversion Functions 
+	int To1DIdxMap(int x, int y) {
+		++x;
+		++y;
+		return (y * PaddedResolution) + x;
+	}
 
 	int To1DIdx(int x, int y) {
-		return (y * Resolution) + x;
+		return (y * SimulationMapResolution) + x;
+	}
+
+
+	bool IsObstacle(int x, int y, Directions dir) {
+
+		const glm::ivec2 Offsets[4] = {
+			glm::ivec2(0,1), glm::ivec2(0,-1), glm::ivec2(-1,0), glm::ivec2(1,0)
+		};
+
+		if (x < 0 || x >= SimulationMapResolution || y < 0 || y >= SimulationMapResolution) {
+			return true;
+		}
+
+		return false;
+	}
+
+	// Gets velocity at a particular direction
+	// Assume velocity is at the border of a square 
+	float GetVelocity(int x, int y, Directions dir) {
+		const glm::ivec3 References[4] = {
+			  glm::ivec3(0,1,1),
+			  glm::ivec3(0,0,1),
+			  glm::ivec3(-1,0,0),
+			  glm::ivec3(0,0,0)
+		};
+		const auto& r = References[int(dir)];
+		return SimulationMap[To1DIdxMap(x + r.x, y + r.y)].Velocities[r.z];
+	}
+
+	float& GetVelocityRef(int x, int y, Directions dir) {
+		const glm::ivec3 References[4] = {
+			  glm::ivec3(0,1,1),
+			  glm::ivec3(0,0,1),
+			  glm::ivec3(-1,0,0),
+			  glm::ivec3(0,0,0)
+		};
+		if (int(dir) < 0 || int(dir) > 3) {
+			throw "WTFFF";
+		}
+
+		glm::ivec3 r = References[int(dir)];
+		return SimulationMap[To1DIdxMap(x + r.x, y + r.y)].Velocities[r.z];
+	}
+
+	float GetDirectionSign(Directions dir) {
+		if (dir == Directions::DOWN || dir == Directions::LEFT) {
+			return -1.;
+		}
+		return 1.;
 	}
 
 	float Frametime = 0.0f;
@@ -36,8 +126,6 @@ namespace Simulation {
 
 	Player MainPlayer;
 	FPSCamera& Camera = MainPlayer.Camera;
-
-	std::vector<Object> Objects;
 
 	glm::vec3 RSI(glm::vec3 Origin, glm::vec3 Dir, float Radius)
 	{
@@ -117,24 +205,18 @@ namespace Simulation {
 
 				ImGui::SliderInt("Substeps", &Substeps, 1, 100);
 
-				if (ImGui::Button("Mod")) {
-					Heightmap[int(RandomGen.Float() * Resolution * Resolution)] = 1.5;
-					Heightmap[int(RandomGen.Float() * Resolution * Resolution)] = 0.5f;
-				}
-
 				if (ImGui::Button("Reset")) {
-
-					for (int i = 0; i < Resolution * Resolution; i++) {
-						Heightmap[i] = 1.f;
-					}
-
+					memset(SimulationMap, 0, PaddedResolution * PaddedResolution * sizeof(Cell));
+					memset(PressureGrid, 0, SimulationMapResolution * SimulationMapResolution * sizeof(float));
 				}
 
 
 
 				ImGui::NewLine();
 
-				ImGui::Checkbox("Wireframe", &WireFrame);
+				ImGui::SliderFloat("Grid Spacing", &GridSpacing, 0.0f, 10.0f);
+				ImGui::SliderFloat("Density Water", &DensityWater, 10.0f, 10000.0f);
+				ImGui::SliderFloat("Over Relaxation Coeff", &OverRelaxationCoefficient, 0.0f, 2.0f);
 
 				ImGui::NewLine();
 				ImGui::NewLine();
@@ -200,22 +282,59 @@ namespace Simulation {
 
 	};
 
-	float SampleHeight(int x, int y) {
-		return Heightmap[To1DIdx(x, y)];
+	// Account for gravity 
+	void SimulateVelocities(float dt) {
+
+		bool ObstacleCache[4];
+
+		memset(ObstacleCache, 0, 4 * sizeof(bool));
+
+		for (int x = 0; x < SimulationMapResolution; x++) {
+			for (int y = 0; y < SimulationMapResolution; y++) {
+				float Weight = 0.;
+
+				for (uint8_t z = 0; z < 4; z++) {
+					float& v = GetVelocityRef(x, y, Directions(z));
+					ObstacleCache[z] = IsObstacle(x, y, Directions(z));
+					Weight += float(ObstacleCache[z]);
+					v += Gravity * dt * -1.;
+				}
+
+				// Handle divergance 
+				float Divergance;
+
+				Divergance = OverRelaxationCoefficient * (GetVelocity(x, y, Directions::RIGHT) - GetVelocity(x, y, Directions::LEFT));
+				Divergance += OverRelaxationCoefficient* (GetVelocity(x, y, Directions::UP) - GetVelocity(x, y, Directions::DOWN));
+
+				// For divergance > 0, too much outflow
+				// For divergance < 0, too much inflow
+				// For divergance = 0, it is a perfectly incompressible surface 
+				// WE need to make the divergance zero
+
+				Weight = std::max(Weight, 0.1f);
+				float PushAmount = Divergance / Weight;
+				float Avg = 0.0f;
+
+				// Gauss Seidel method 
+				for (uint8_t z = 0; z < 4; z++) {
+
+					float& v = GetVelocityRef(x, y, Directions(z));
+					v += PushAmount * float(!ObstacleCache[z]);
+					Avg += v;
+				}
+
+				// Solve for pressure gradient 
+
+				// Todo : WHY divergance/weight?
+				// Essence? WHY.?
+				PressureGrid[To1DIdx(x, y)] = Avg / 4.; 
+				//PressureGrid[To1DIdx(x, y)] = (Divergance / Weight)* (DensityWater * GridSpacing / DeltaTime);
+
+			}
+		}
+
 	}
 
-
-	float SampleHeightClamped(int x, int y) {
-		x = glm::clamp(x, 0, Resolution - 1);
-		y = glm::clamp(y, 0, Resolution - 1);
-		return SampleHeight(x, y);
-	}
-
-	float SampleHeightClamped(glm::ivec2 t) {
-		t.x = glm::clamp(t.x, 0, Resolution - 1);
-		t.y = glm::clamp(t.y, 0, Resolution - 1);
-		return SampleHeight(t.x, t.y);
-	}
 
 
 	void Pipeline::StartPipeline()
@@ -259,29 +378,33 @@ namespace Simulation {
 
 		// Shaders
 		GLClasses::Shader& BlitShader = ShaderManager::GetShader("BLIT");
-		GLClasses::Shader& RTSphere = ShaderManager::GetShader("RD");
-
+		GLClasses::Shader& RenderShader = ShaderManager::GetShader("RD");
 		GLClasses::Framebuffer GBuffer = GLClasses::Framebuffer(16, 16, { {GL_RGBA, GL_RGBA, GL_UNSIGNED_BYTE, false, false},  {GL_RGBA16F, GL_RGBA, GL_FLOAT, false, false} }, true, true);
 
-		// Create Heightmaps
-		Heightmap = new float[Resolution * Resolution];
+		// CPU data
+		SimulationMap = new Cell[PaddedResolution * PaddedResolution];
+		memset(SimulationMap, 0, PaddedResolution * PaddedResolution * sizeof(Cell));
 
-		memset(Heightmap, 0, Resolution * Resolution * sizeof(float));
+		PressureGrid = new float[SimulationMapResolution * SimulationMapResolution];
+		memset(PressureGrid, 0, SimulationMapResolution * SimulationMapResolution * sizeof(float));
 
-		// GPU Data
-		GLuint HeightmapSSBO = 0;
-		glGenBuffers(1, &HeightmapSSBO);
-		glBindBuffer(GL_SHADER_STORAGE_BUFFER, HeightmapSSBO);
-		glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(float) * Resolution * Resolution, (void*)0, GL_DYNAMIC_DRAW);
-		glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
-		// For now.
-		for (int x = 0; x < Resolution; x++) {
-			for (int y = 0; y < Resolution; y++) {
-				int i = To1DIdx(x, y);
-				Heightmap[i] = 1.0f;
+		for (int x = 0; x < SimulationMapResolution; x++) {
+			for (int y = 0; y < SimulationMapResolution; y++) {
+				for (int z = 0; z < 4; z++) {
+					auto& v = GetVelocityRef(x, y, Directions(z));
+						v= 1000.0f;
+				}
 			}
 		}
+
+		// GPU Data
+		GLuint PressureGradientSSBO = 0;
+		glGenBuffers(1, &PressureGradientSSBO);
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, PressureGradientSSBO);
+		glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(float) * SimulationMapResolution * SimulationMapResolution, (void*)0, GL_DYNAMIC_DRAW);
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
 		glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
 		glClear(GL_COLOR_BUFFER_BIT);
 
@@ -301,11 +424,12 @@ namespace Simulation {
 			// SIMULATE
 			if (DoSim || PhysicsStep)
 			{
+				SimulateVelocities(DeltaTime);
 				PhysicsStep = false;
 			}
 
-			glBindBuffer(GL_SHADER_STORAGE_BUFFER, HeightmapSSBO);
-			glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(float) * Resolution * Resolution, Heightmap, GL_DYNAMIC_DRAW);
+			glBindBuffer(GL_SHADER_STORAGE_BUFFER, PressureGradientSSBO);
+			glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(float) * SimulationMapResolution * SimulationMapResolution, PressureGrid, GL_DYNAMIC_DRAW);
 
 			glDisable(GL_DEPTH_TEST);
 			glDisable(GL_CULL_FACE);
@@ -315,15 +439,16 @@ namespace Simulation {
 			// Sphere
 
 			GBuffer.Bind();
-			RTSphere.Use();
 
-			RTSphere.SetInteger("u_Texture", 0);
-			RTSphere.SetInteger("u_Depth", 1);
+			RenderShader.Use();
 
-			RTSphere.SetFloat("u_zNear", Camera.GetNearPlane());
-			RTSphere.SetFloat("u_zFar", Camera.GetFarPlane());
-			RTSphere.SetMatrix4("u_InverseProjection", glm::inverse(Camera.GetProjectionMatrix()));
-			RTSphere.SetMatrix4("u_InverseView", glm::inverse(Camera.GetViewMatrix()));
+			RenderShader.SetInteger("u_Resolution", (SimulationMapResolution));
+			RenderShader.SetFloat("u_zNear", Camera.GetNearPlane());
+			RenderShader.SetFloat("u_zFar", Camera.GetFarPlane());
+			RenderShader.SetMatrix4("u_InverseProjection", glm::inverse(Camera.GetProjectionMatrix()));
+			RenderShader.SetMatrix4("u_InverseView", glm::inverse(Camera.GetViewMatrix()));
+
+			glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, PressureGradientSSBO);
 
 			ScreenQuadVAO.Bind();
 			glDrawArrays(GL_TRIANGLES, 0, 6);
