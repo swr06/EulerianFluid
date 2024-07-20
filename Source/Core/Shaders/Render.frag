@@ -60,6 +60,12 @@ float SampleHeight(vec2 UV){
 
 void main() {
 
+    float V = Bilinear(v_TexCoords);
 
-	o_Color = vec4(vec3(Bilinear(v_TexCoords)),1.);
+   // V = abs(V);
+    V /= 10000.0f;
+
+    V = 1. - exp(-V);
+
+	o_Color = vec4(vec3(V),1.);
 }

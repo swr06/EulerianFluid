@@ -93,6 +93,11 @@ namespace Simulation {
 			  glm::ivec3(-1,0,0),
 			  glm::ivec3(0,0,0)
 		};
+
+		if (int(dir) < 0 || int(dir) > 3) {
+			throw "WTFFF";
+		}
+
 		const auto& r = References[int(dir)];
 		return SimulationMap[To1DIdxMap(x + r.x, y + r.y)].Velocities[r.z];
 	}
@@ -296,12 +301,20 @@ namespace Simulation {
 				for (uint8_t z = 0; z < 4; z++) {
 					float& v = GetVelocityRef(x, y, Directions(z));
 					ObstacleCache[z] = IsObstacle(x, y, Directions(z));
-					Weight += float(ObstacleCache[z]);
-					v += Gravity * dt * -1.;
+
+					if (!ObstacleCache[z]) {
+						v += Gravity * dt * -1.;
+					}
+					
+					Weight += float(!ObstacleCache[z]);
+				}
+
+				if (Weight < 0.01f) {
+					continue;
 				}
 
 				// Handle divergance 
-				float Divergance;
+				float Divergance = 0.0f;
 
 				Divergance = OverRelaxationCoefficient * (GetVelocity(x, y, Directions::RIGHT) - GetVelocity(x, y, Directions::LEFT));
 				Divergance += OverRelaxationCoefficient* (GetVelocity(x, y, Directions::UP) - GetVelocity(x, y, Directions::DOWN));
@@ -311,25 +324,28 @@ namespace Simulation {
 				// For divergance = 0, it is a perfectly incompressible surface 
 				// WE need to make the divergance zero
 
-				Weight = std::max(Weight, 0.1f);
 				float PushAmount = Divergance / Weight;
 				float Avg = 0.0f;
 
 				// Gauss Seidel method 
 				for (uint8_t z = 0; z < 4; z++) {
 
-					float& v = GetVelocityRef(x, y, Directions(z));
-					v += PushAmount * float(!ObstacleCache[z]);
-					Avg += v;
+					if (!ObstacleCache[int(z)]) {
+
+						float& v = GetVelocityRef(x, y, Directions(z));
+						v += PushAmount * float(!ObstacleCache[z]) * GetDirectionSign(Directions(z)) * -1.;
+						Avg += v;
+					}
 				}
 
 				// Solve for pressure gradient 
 
 				// Todo : WHY divergance/weight?
 				// Essence? WHY.?
-				PressureGrid[To1DIdx(x, y)] = Avg / 4.; 
-				//PressureGrid[To1DIdx(x, y)] = (Divergance / Weight)* (DensityWater * GridSpacing / DeltaTime);
-
+				
+				Avg /= 4.;
+				PressureGrid[To1DIdx(x, y)] = (Divergance / Weight)* (DensityWater * GridSpacing / DeltaTime);
+				
 			}
 		}
 
@@ -391,9 +407,25 @@ namespace Simulation {
 
 		for (int x = 0; x < SimulationMapResolution; x++) {
 			for (int y = 0; y < SimulationMapResolution; y++) {
+				
+				glm::vec2 V = glm::vec2(x, y);
+				V /= float(SimulationMapResolution);
+				V = V * 2.f - 1.f;
+
+				float d = glm::distance(V, glm::vec2(0.0));
+				
 				for (int z = 0; z < 4; z++) {
 					auto& v = GetVelocityRef(x, y, Directions(z));
-						v= 1000.0f;
+					v = 0.0f;//RandomGen.Float();
+
+				}
+
+				for (int z = 0; z < 4; z++) {
+					auto& v = GetVelocityRef(x, y, Directions(z));
+
+					if (d < 0.7f)
+						v = 10.0f;//RandomGen.Float();
+
 				}
 			}
 		}
